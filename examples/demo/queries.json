@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "source": "demo",
+  "queries": [
+    {"app": "sales-dashboard", "sql": "SELECT customer_type, count(*) FROM customers GROUP BY customer_type", "calls": 950},
+    {"app": "sales-dashboard", "sql": "SELECT c.customer_type, sum(i.amount) FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.created_at >= $1 GROUP BY c.customer_type", "calls": 410},
+    {"app": "support-bot", "sql": "SELECT name, email, customer_type FROM customers WHERE email = $1", "calls": 3020},
+    {"app": "invoice-bot", "sql": "INSERT INTO invoices (customer_id, amount) VALUES ($1, $2) RETURNING id", "calls": 1200},
+    {"app": "invoice-bot", "sql": "UPDATE invoices SET status = $1 WHERE id = $2", "calls": 800},
+    {"app": "welcome-emailer", "sql": "SELECT id, name, email FROM customers WHERE created_at > now() - interval '1 day'", "calls": 24}
+  ]
+}

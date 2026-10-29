@@ -1,0 +1,78 @@
+name: "Ripple check"
+description: "Comment on pull requests with the apps a Postgres change would break, before it ships."
+author: "Yash"
+branding:
+  icon: "alert-triangle"
+  color: "orange"
+
+inputs:
+  migration:
+    description: "Path(s) to the new migration SQL file(s), separated by spaces, applied in order."
+    required: true
+  database-url:
+    description: "Postgres URL of a scratch database that already has your current schema. Never production."
+    required: true
+  queries:
+    description: "Path to the recorded app queries file."
+    default: "ripple-queries.json"
+  fix:
+    description: "Ask an AI to suggest fixes. Needs ANTHROPIC_API_KEY, or OPENAI_API_KEY plus RIPPLE_MODEL, in the job's env."
+    default: "false"
+  fail-on:
+    description: "When to fail the job: breaks, danger, or never."
+    default: "breaks"
+  comment:
+    description: "Post the report as a pull request comment."
+    default: "true"
+
+outputs:
+  exit-code:
+    description: "0 when the change is safe by your fail-on rule, 1 when it isn't, 2 on errors."
+    value: ${{ steps.check.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+
+    - name: Install Ripple
+      shell: bash
+      run: python -m pip install --quiet "${GITHUB_ACTION_PATH}[ai]"
+
+    - name: Check the change
+      id: check
+      shell: bash
+      env:
+        RIPPLE_MIGRATIONS: ${{ inputs.migration }}
+        RIPPLE_DATABASE_URL: ${{ inputs.database-url }}
+        RIPPLE_QUERIES: ${{ inputs.queries }}
+        RIPPLE_FIX: ${{ inputs.fix }}
+        RIPPLE_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set +e
+        read -r -a files <<< "$RIPPLE_MIGRATIONS"
+        extra=()
+        if [ "$RIPPLE_FIX" = "true" ]; then extra+=(--fix); fi
+        ripple check "${files[@]}" --queries "$RIPPLE_QUERIES" --format markdown \
+          --fail-on "$RIPPLE_FAIL_ON" "${extra[@]}" > ripple-report.md
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        cat ripple-report.md >> "$GITHUB_STEP_SUMMARY"
+        exit 0
+
+    - name: Comment on the pull request
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: gh pr comment "$PR_NUMBER" --body-file ripple-report.md
+
+    - name: Pass or fail
+      shell: bash
+      env:
+        CODE: ${{ steps.check.outputs.exit-code }}
+      run: exit "${CODE:-2}"

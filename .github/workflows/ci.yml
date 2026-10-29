@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      - run: pytest -q
+        env:
+          RIPPLE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+  demo:
+    # Runs this repo's own GitHub Action on the demo, so the action itself stays tested.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - name: Load the demo schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f examples/demo/schema.sql
+      - name: Risky change
+        id: risky
+        continue-on-error: true
+        uses: ./
+        with:
+          migration: examples/demo/migration.sql
+          database-url: ${{ env.DATABASE_URL }}
+          queries: examples/demo/queries.json
+          comment: "false"
+      - name: The risky change must have been caught
+        env:
+          CODE: ${{ steps.risky.outputs.exit-code }}
+        run: |
+          if [ "$CODE" != "1" ]; then echo "Expected Ripple to catch the risky change (got exit code '$CODE')"; exit 1; fi
+      - name: Safe change must pass
+        uses: ./
+        with:
+          migration: examples/demo/migration-safe.sql
+          database-url: ${{ env.DATABASE_URL }}
+          queries: examples/demo/queries.json
+          fail-on: danger
+          comment: "false"

@@ -1,0 +1,10 @@
+# A throwaway Postgres with the demo schema loaded. Never point Ripple at production.
+services:
+  scratch:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro

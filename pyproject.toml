@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ripplecheck"
+version = "0.1.0"
+description = "See which apps a Postgres change will break, before it ships."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Yash" }]
+requires-python = ">=3.10"
+keywords = ["postgres", "schema", "migrations", "ai-agents", "mcp", "data-contracts"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Database",
+  "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+  "psycopg[binary]>=3.1",
+  "sqlglot>=25",
+]
+
+[project.optional-dependencies]
+ai = ["anthropic>=0.40"]
+mcp = ["mcp>=1.2"]
+all = ["anthropic>=0.40", "mcp>=1.2"]
+dev = ["pytest>=8", "mcp>=1.2"]
+
+[project.scripts]
+ripple = "ripplecheck.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yashpb5005/ripple"
+Issues = "https://github.com/yashpb5005/ripple/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ripplecheck"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

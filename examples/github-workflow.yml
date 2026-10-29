@@ -1,0 +1,61 @@
+# Copy to .github/workflows/ripple.yml in YOUR app repo.
+# Every pull request that adds a migration gets a comment listing the apps it would break.
+#
+# Assumes plain SQL migrations in db/migrations/ (Prisma, Supabase and Flyway files work as-is),
+# and a ripple-queries.json in the repo root made with `ripple collect`.
+name: ripple
+
+on:
+  pull_request:
+    paths: ["db/migrations/**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find the migrations this pull request adds
+        id: new
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          files=$(git diff --name-only --diff-filter=A "origin/$BASE" HEAD -- db/migrations | grep '\.sql$' | sort | tr '\n' ' ')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+
+      - name: Build today's schema (every migration except the new ones)
+        if: steps.new.outputs.files != ''
+        env:
+          NEW: ${{ steps.new.outputs.files }}
+        run: |
+          for f in $(ls db/migrations/*.sql | sort); do
+            case " $NEW " in *" $f "*) continue ;; esac
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      - name: Ripple check
+        if: steps.new.outputs.files != ''
+        uses: YOUR-GITHUB-USERNAME/ripple@v0.1.0
+        with:
+          migration: ${{ steps.new.outputs.files }}
+          database-url: ${{ env.DATABASE_URL }}
+          queries: ripple-queries.json
+        # To get AI-suggested fixes, add `fix: "true"` above and:
+        # env:
+        #   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
