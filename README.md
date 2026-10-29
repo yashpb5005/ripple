@@ -57,8 +57,13 @@ cd ripple
 ### 2. Install Ripple
 
 ```bash
+pip install ripplecheck
+```
+
+Or, to work on Ripple itself from a clone:
+
+```bash
 pip install -e .
-# or, once published to PyPI: pip install ripplecheck
 ```
 
 Check it installed correctly:
@@ -190,7 +195,7 @@ Exit codes: `0` safe, `1` breaks (or warnings with `--fail-on danger`), `2` erro
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
+See [CHANGELOG.md](CHANGELOG.md) for release notes. Published on [PyPI](https://pypi.org/project/ripplecheck/).
 
 ## Roadmap
 
