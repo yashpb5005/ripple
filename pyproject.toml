@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "See which apps a Postgres change will break, before it ships."
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Yash" }]
+authors = [{ name = "Yash Bhargav" }]
 requires-python = ">=3.10"
 keywords = ["postgres", "schema", "migrations", "ai-agents", "mcp", "data-contracts"]
 classifiers = [

@@ -39,23 +39,54 @@ Add `--fix` and an AI rewrites the broken queries. Ripple re-checks every sugges
 - **Nobody knows who depends on what.** A company used to have 50 apps on its database. Now it has hundreds of AI-built tools, each changing every week.
 - **Broken code is cheap to fix now. Not knowing it's broken is the expensive part.**
 
-## Try it in 2 minutes
+## Installation
 
-You need Docker and Python 3.10+.
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) — only needed to run the included demo database; not required once you point Ripple at your own Postgres
+- [Python 3.10+](https://www.python.org/downloads/)
+- `pip` (comes with Python)
+
+### 1. Clone the repository
 
 ```bash
-git clone https://github.com/yashpb5005/ripple
+git clone https://github.com/yashpb5005/ripple.git
 cd ripple
-pip install -e .                      # or: pip install ripplecheck
+```
+
+### 2. Install Ripple
+
+```bash
+pip install -e .
+# or, once published to PyPI: pip install ripplecheck
+```
+
+Check it installed correctly:
+
+```bash
+ripple --help
+```
+
+### 3. Try the included demo
+
+This spins up a throwaway, local-only Postgres container with a sample schema, so you can see Ripple catch a breaking change without touching any real database:
+
+```bash
 cd examples/demo
-docker compose up -d                  # a throwaway Postgres with the demo schema
+docker compose up -d                  # starts a throwaway Postgres on localhost:5433
 
 ripple check migration.sql --dsn postgresql://postgres:postgres@localhost:5433/postgres --queries queries.json
 ripple check migration-safe.sql --dsn postgresql://postgres:postgres@localhost:5433/postgres --queries queries.json
 ripple map --queries queries.json
 ```
 
-`migration.sql` is what an AI wrote for "rename customer type to segment, and track invoice currency". `migration-safe.sql` does the same job safely.
+`migration.sql` is what an AI wrote for "rename customer type to segment, and track invoice currency" — it breaks things. `migration-safe.sql` does the same job safely. Run both and compare the output.
+
+When you're done, remove the demo database:
+
+```bash
+docker compose down -v
+```
 
 ## Use it on your own database
 
@@ -166,6 +197,28 @@ Exit codes: `0` safe, `1` breaks (or warnings with `--fail-on danger`), `2` erro
 
 Ideas and pull requests are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Contributing
+
+Ripple is open source and open to contributions — bug fixes, new warnings, docs, support for other log formats, anything in the [Roadmap](#roadmap) above. Fork the repo, make your change, and open a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the codebase is laid out and how to run the tests.
+
+## Disclaimer
+
+Ripple is an independent, personal open-source project created and maintained by **Yash Bhargav**. It is not affiliated with or endorsed by PostgreSQL, any cloud provider, or any company, and is provided **"as is", without warranty of any kind**, express or implied.
+
+Ripple is designed to run every check inside a database transaction that is always rolled back, against a **scratch or non-production copy of your schema** — it is never meant to run against production, and never commits anything. That said, **you use this software entirely at your own risk**. By downloading, installing, or using Ripple, you agree that **Yash Bhargav and any contributors are not responsible or liable for any damage, data loss, downtime, financial loss, or other harm** arising from its use, misuse, or from any bug it may contain, including if it is ever pointed at a real/production database or credentials.
+
+Before using Ripple on anything that matters:
+
+- Test it first against a throwaway or non-production database.
+- Review the commands and configuration before running them.
+- Keep independent backups of anything you can't afford to lose.
+
+See [LICENSE](LICENSE) for the full MIT license text.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+## Author
+
+Created and maintained by [Yash Bhargav](https://github.com/yashpb5005).
