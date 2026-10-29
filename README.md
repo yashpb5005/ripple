@@ -188,6 +188,10 @@ Exit codes: `0` safe, `1` breaks (or warnings with `--fail-on danger`), `2` erro
 - **Changes in meaning.** If a column keeps its name but means something new, every query still "works".
 - **Other databases.** Postgres only, for now.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## Roadmap
 
 - [ ] Open pull requests with the fixes in each app's repo
