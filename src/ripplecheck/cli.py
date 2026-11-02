@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .collect import AppQuery, from_csvlog, from_jsonlog, from_pg_stat_statements, load_queries, save_queries
+from .collect import AppQuery, from_csvlog, from_jsonlog, from_pg_stat_statements, load_metadata, load_queries, save_queries
 
 DEFAULT_QUERIES = "ripple-queries.json"
 ENV_DSN = "RIPPLE_DATABASE_URL"
@@ -25,6 +25,7 @@ def _scratch_dsn(args) -> str | None:
 
 def cmd_collect(args) -> int:
     warnings: list[str] = []
+    stats_since: list = []
     source = args.source
     if not source:
         source = "stats"
@@ -34,7 +35,7 @@ def cmd_collect(args) -> int:
         if source == "stats":
             if not args.dsn:
                 return _fail("collect needs --dsn (a read-only connection is enough).")
-            queries = from_pg_stat_statements(args.dsn, args.min_calls, args.exclude_role, warnings)
+            queries = from_pg_stat_statements(args.dsn, args.min_calls, args.exclude_role, warnings, stats_since)
         elif source in ("csvlog", "jsonlog"):
             if not args.log:
                 return _fail(f"--source {source} needs --log PATH.")
@@ -58,11 +59,14 @@ def cmd_collect(args) -> int:
         seen = {(q.app, q.sql) for q in queries}
         queries = queries + [q for q in existing if (q.app, q.sql) not in seen]
 
-    save_queries(queries, output, source)
+    since = stats_since[0] if stats_since else None
+    save_queries(queries, output, source, stats_since=since)
     apps = sorted({q.app for q in queries})
     print(f"Saved {len(queries)} queries from {len(apps)} apps to {output}.")
     if apps:
         print("Apps: " + ", ".join(apps))
+    if since:
+        print(f"Covers queries since {since} (pg_stat_statements' last reset).")
     for warning in warnings:
         print(f"Warning: {warning}")
     if len(apps) == 1 and source == "stats":
@@ -143,6 +147,15 @@ def cmd_check(args) -> int:
     except Exception as error:
         text = str(error).strip()
         return _fail(f"couldn't run the check: {text.splitlines()[0] if text else repr(error)}")
+
+    try:
+        since = load_metadata(args.queries).get("stats_since")
+    except Exception:
+        since = None
+    if since:
+        result.notes.append(
+            f"Based on queries seen since {since} — collect again after a full traffic cycle if your apps have changed."
+        )
 
     if args.format == "json":
         print(render_json(result), end="")

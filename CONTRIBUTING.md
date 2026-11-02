@@ -16,11 +16,15 @@ pip install -e ".[dev]"
 Unit tests run anywhere. Database tests need a Postgres you can create databases on:
 
 ```bash
-docker run -d --name ripple-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
+docker run -d --name ripple-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16 -c shared_preload_libraries=pg_stat_statements
 RIPPLE_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres pytest -q
 ```
 
-Each database test creates its own throwaway database and drops it afterwards.
+Each database test creates its own throwaway database and drops it afterwards. `-c shared_preload_libraries=pg_stat_statements` is only needed for `tests/test_collect_stats.py`; without it, that file's tests skip themselves instead of failing.
+
+## Test data provenance
+
+`tests/fixtures/pagila_subset.sql` is a trimmed, simplified subset of the [Pagila](https://github.com/devrimgunduz/pagila) sample database (PostgreSQL License — permissive, MIT-style), used by `tests/test_dependencies.py` because it needs real views, a trigger function, and a foreign key, which the custom `examples/demo` schema intentionally doesn't have. It's kept separate from `examples/demo`, which stays exactly as documented in the README quickstart. Any future third-party fixture should carry the same kind of source + license header at the top of the file.
 
 ## Where things live
 

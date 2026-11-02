@@ -9,6 +9,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import sqlglot
+from sqlglot import exp
+
 DATA_KINDS = {"r", "p"}  # ordinary and partitioned tables hold data; views do not
 
 SNAPSHOT_SQL = """
@@ -222,3 +225,140 @@ def scan_statements(sql: str) -> list[Change]:
         elif (match := _UPDATE_RE.match(statement)) and not _WHERE_RE.search(statement):
             changes.append(Change("rows_updated", _table_name(match.group(1)), detail="UPDATE without WHERE", danger=True))
     return changes
+
+
+# --- Naming what blocks a failed drop/rename --------------------------------------------
+
+
+def extract_ddl_targets(sql: str) -> list[tuple[str, str | None]]:
+    """Tables/columns a migration drops, or renames away from (the old name is what breaks dependents).
+
+    Best-effort: statements it can't parse are skipped, never raised.
+    """
+    masked, blocks = _mask_dollar_quotes(sql)
+    targets: list[tuple[str, str | None]] = []
+    for statement in masked.split(";"):
+        statement = _unmask(statement, blocks).strip()
+        if not statement:
+            continue
+        try:
+            tree = sqlglot.parse_one(statement, read="postgres")
+        except Exception:
+            continue
+        if isinstance(tree, exp.Drop) and tree.args.get("kind") == "TABLE":
+            for table in tree.args.get("tables") or []:
+                if isinstance(table, exp.Table) and table.name:
+                    raw = f"{table.db}.{table.name}" if table.db else table.name
+                    targets.append((_table_name(raw), None))
+        elif isinstance(tree, exp.Alter):
+            table_node = tree.this
+            if not isinstance(table_node, exp.Table) or not table_node.name:
+                continue
+            raw_table = f"{table_node.db}.{table_node.name}" if table_node.db else table_node.name
+            full_table = _table_name(raw_table)
+            for action in tree.args.get("actions") or []:
+                if isinstance(action, exp.Drop) and action.args.get("kind") == "COLUMN":
+                    for col in action.args.get("tables") or []:
+                        if isinstance(col, exp.Column) and col.name:
+                            targets.append((full_table, col.name))
+                elif isinstance(action, exp.RenameColumn):
+                    old = action.this
+                    if isinstance(old, exp.Column) and old.name:
+                        targets.append((full_table, old.name))
+    return targets
+
+
+def find_blocking_objects(cur, table: str, column: str | None) -> list[str]:
+    """Views, materialized views, and foreign keys that depend on a table/column. Best-effort: never raises."""
+    schema, _, name = table.rpartition(".")
+    schema = schema or "public"
+    found: list[str] = []
+    try:
+        if column:
+            cur.execute(
+                """
+                SELECT DISTINCT dependent_ns.nspname, dependent_view.relname, dependent_view.relkind
+                FROM pg_depend
+                JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid
+                JOIN pg_class dependent_view ON pg_rewrite.ev_class = dependent_view.oid
+                JOIN pg_namespace dependent_ns ON dependent_view.relnamespace = dependent_ns.oid
+                JOIN pg_class source_table ON pg_depend.refobjid = source_table.oid
+                JOIN pg_namespace source_ns ON source_table.relnamespace = source_ns.oid
+                JOIN pg_attribute ON pg_attribute.attrelid = pg_depend.refobjid
+                                 AND pg_attribute.attnum = pg_depend.refobjsubid
+                WHERE source_ns.nspname = %s AND source_table.relname = %s AND pg_attribute.attname = %s
+                  AND dependent_view.relkind IN ('v', 'm') AND dependent_view.relname != source_table.relname
+                """,
+                (schema, name, column),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT DISTINCT dependent_ns.nspname, dependent_view.relname, dependent_view.relkind
+                FROM pg_depend
+                JOIN pg_rewrite ON pg_depend.objid = pg_rewrite.oid
+                JOIN pg_class dependent_view ON pg_rewrite.ev_class = dependent_view.oid
+                JOIN pg_namespace dependent_ns ON dependent_view.relnamespace = dependent_ns.oid
+                JOIN pg_class source_table ON pg_depend.refobjid = source_table.oid
+                JOIN pg_namespace source_ns ON source_table.relnamespace = source_ns.oid
+                WHERE source_ns.nspname = %s AND source_table.relname = %s
+                  AND dependent_view.relkind IN ('v', 'm') AND dependent_view.relname != source_table.relname
+                """,
+                (schema, name),
+            )
+        for view_schema, view_name, relkind in cur.fetchall():
+            kind = "materialized view" if relkind == "m" else "view"
+            where = f" (uses {table}.{column})" if column else f" (uses {table})"
+            found.append(f"Blocked by: {kind} {view_schema}.{view_name}{where}")
+
+        fk_sql = """
+            SELECT con.conname, ns.nspname, cls.relname
+            FROM pg_constraint con
+            JOIN pg_class cls ON cls.oid = con.conrelid
+            JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+            JOIN pg_class reftable ON reftable.oid = con.confrelid
+            JOIN pg_namespace refns ON refns.oid = reftable.relnamespace
+            WHERE con.contype = 'f' AND refns.nspname = %s AND reftable.relname = %s
+        """
+        cur.execute(fk_sql, (schema, name))
+        for conname, fk_schema, fk_table in cur.fetchall():
+            where = f" (uses {table}.{column})" if column else f" (uses {table})"
+            found.append(f"Blocked by: foreign key {conname} on {fk_schema}.{fk_table}{where}")
+    except Exception:
+        return found
+    return found
+
+
+def scan_function_bodies(cur, columns: list[tuple[str, str]]) -> list[str]:
+    """Functions whose body text mentions a dropped/renamed column's name.
+
+    Best-effort and low-confidence: a name match in function source isn't proof the function
+    actually breaks (plpgsql bodies aren't dependency-tracked by Postgres at the column level),
+    so this is reported as a note to check manually, never as a `danger`.
+    """
+    if not columns:
+        return []
+    try:
+        cur.execute(
+            """
+            SELECT n.nspname, p.proname, p.prosrc
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.prosrc IS NOT NULL AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+            """
+        )
+        rows = cur.fetchall()
+    except Exception:
+        return []
+    found: list[str] = []
+    for func_schema, func_name, body in rows:
+        if not body:
+            continue
+        for table, column in columns:
+            if re.search(rf"\b{re.escape(column)}\b", body):
+                found.append(
+                    f"function {func_schema}.{func_name}() may reference {table}.{column} — "
+                    "verify manually (matched by name only, not confirmed)."
+                )
+                break
+    return found
