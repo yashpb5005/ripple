@@ -2,6 +2,22 @@
 
 All notable changes to Ripple are documented here.
 
+## [v0.2.0] — 2026-11-02
+
+### Added
+
+- `ripple check` now shows the full Postgres error detail on a failing migration, and best-effort names the specific view, materialized view, or foreign key blocking a `DROP`/`RENAME COLUMN`.
+- `ripple check` adds a low-confidence note when a function or trigger body may reference a dropped or renamed column, clearly hedged as a name match and excluded from `--fail-on danger`.
+- `ripple check` now warns when other connections are active on the target database before applying a migration, since the exclusive locks it takes for the check's duration can affect them.
+- `ripple collect` records the `pg_stat_statements` coverage window (`stats_since`, its last reset time) in the saved queries file and prints it; `ripple check` surfaces it as a note. Queries files saved by v0.1.0 still load fine without it.
+- `ripple collect` warns when `pg_stat_statements.max` is near its tracked-query cap, since older queries may already be evicted.
+- `ripple collect` warns when a single database role has multiple distinct, currently-connected application names, since Ripple will attribute all of its queries to one app.
+- Documented in the README that application-side field unpacking (JSON payloads, ORM models) is outside what Ripple can see, since it only reads SQL.
+
+### Project setup
+
+- Added `tests/fixtures/pagila_subset.sql`, a trimmed, attributed subset of the Pagila sample database (PostgreSQL License), used by new dependency-tracking tests, kept separate from `examples/demo`.
+
 ## [v0.1.0] — 2026-10-29
 
 Initial public release.

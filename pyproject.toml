@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ripplecheck"
-version = "0.1.0"
+version = "0.2.0"
 description = "See which apps a Postgres change will break, before it ships."
 readme = "README.md"
 license = { text = "MIT" }

@@ -15,7 +15,18 @@ from dataclasses import dataclass, field
 import psycopg
 
 from .collect import AppQuery
-from .schema import Change, Snapshot, diff, estimate_rows, prepare_migration, scan_statements, take_snapshot
+from .schema import (
+    Change,
+    Snapshot,
+    diff,
+    estimate_rows,
+    extract_ddl_targets,
+    find_blocking_objects,
+    prepare_migration,
+    scan_function_bodies,
+    scan_statements,
+    take_snapshot,
+)
 from .sqlutil import QueryRefs, extract_refs, has_multiple_statements
 
 REAL_DATA_ROWS = 10_000
@@ -75,7 +86,10 @@ class CheckResult:
 def _error_text(error: psycopg.Error) -> str:
     diag = getattr(error, "diag", None)
     message = (diag.message_primary if diag else None) or str(error).strip().splitlines()[0]
+    detail = diag.message_detail if diag else None
     hint = diag.message_hint if diag else None
+    if detail:
+        message = f"{message} ({detail})"
     return f"{message} (hint: {hint})" if hint else message
 
 
@@ -198,6 +212,16 @@ def run_check(
                     "empty copy of your schema. Point it at a scratch database, not production."
                 )
 
+            cur.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()"
+            )
+            others = cur.fetchone()[0]
+            if others:
+                result.notes.append(
+                    f"{others} other connection(s) are active on this database right now. Applying a migration "
+                    "here takes exclusive locks until the check finishes — point --dsn at a copy nothing else queries."
+                )
+
             before = take_snapshot(cur)
             schema = before.live_columns()
             refs = [extract_refs(q.sql, schema) for q in queries]
@@ -209,10 +233,20 @@ def run_check(
                 cur.execute(migration_sql)
             except psycopg.Error as error:
                 result.migration_error = _error_text(error)
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT ripple_migration")
+                    for table, column in extract_ddl_targets(migration_sql):
+                        result.notes.extend(find_blocking_objects(cur, table, column))
+                except Exception:
+                    pass
                 return result
 
             after = take_snapshot(cur)
             result.changes = diff(before, after) + scan_statements(migration_sql)
+            renamed_or_dropped = [
+                (c.table, c.column) for c in result.changes if c.kind in ("column_dropped", "column_renamed") and c.column
+            ]
+            result.notes.extend(scan_function_bodies(cur, renamed_or_dropped))
 
             for query, ref, before_error in zip(queries, refs, baseline):
                 if before_error:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .sqlutil import is_checkable, is_system_query, normalize, scrub_literals
 
-FILE_VERSION = 1
+FILE_VERSION = 2
 
 # Postgres log messages that carry a statement, with or without a duration prefix.
 _MESSAGE_RE = re.compile(r"^(?:duration: [\d.]+ ms\s+)?(?:statement|execute [^:]*):\s*(.+)$", re.S)
@@ -34,14 +34,30 @@ def load_queries(path: str | Path) -> list[AppQuery]:
     return [AppQuery(app=str(i["app"]), sql=str(i["sql"]), calls=int(i.get("calls", 0))) for i in items]
 
 
-def save_queries(queries: list[AppQuery], path: str | Path, source: str) -> None:
+def save_queries(queries: list[AppQuery], path: str | Path, source: str, stats_since=None) -> None:
     payload = {
         "version": FILE_VERSION,
         "source": source,
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "stats_since": stats_since.isoformat() if stats_since else None,
         "queries": [{"app": q.app, "sql": q.sql, "calls": q.calls} for q in queries],
     }
     Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def load_metadata(path: str | Path) -> dict:
+    """Collection metadata (source, when it was collected, how much pg_stat_statements history it covers).
+
+    Older files (version 1) simply lack `stats_since`; `.get` returns None for them rather than failing.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "source": data.get("source"),
+        "collected_at": data.get("collected_at"),
+        "stats_since": data.get("stats_since"),
+    }
 
 
 def clean(queries: Iterable[AppQuery], scrub: bool) -> list[AppQuery]:
@@ -65,8 +81,73 @@ def clean(queries: Iterable[AppQuery], scrub: bool) -> list[AppQuery]:
 HIDDEN_QUERY = "<insufficient privilege>"
 
 
+def _stats_reset_time(conn):
+    """When pg_stat_statements was last reset, so Ripple can say how much history it covers. Best-effort.
+
+    Each attempt rolls back on failure before the next: a failed query (e.g. pg_stat_statements_info
+    doesn't exist before PG14) aborts the transaction, and every later query on this connection would
+    otherwise fail too, not because it's actually unavailable.
+    """
+    try:
+        row = conn.execute("SELECT stats_reset FROM pg_stat_statements_info").fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        conn.rollback()
+    try:
+        row = conn.execute("SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()").fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        conn.rollback()
+    return None
+
+
+def _eviction_warning(conn) -> str | None:
+    """pg_stat_statements is a bounded cache; warn when it's near full, since less-used queries get evicted first."""
+    try:
+        cap = conn.execute("SELECT current_setting('pg_stat_statements.max')::int").fetchone()[0]
+        tracked = conn.execute("SELECT count(*) FROM pg_stat_statements").fetchone()[0]
+    except Exception:
+        conn.rollback()
+        return None
+    if cap and tracked >= 0.95 * cap:
+        return (
+            f"You're near the pg_stat_statements.max limit ({tracked}/{cap} tracked) — "
+            "less-used queries may already be getting evicted."
+        )
+    return None
+
+
+def _shared_role_warnings(conn, excluded: set[str]) -> list[str]:
+    """pg_stat_statements groups by role, not app. Flag roles with more than one app connected right now."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT usename, array_agg(DISTINCT application_name)
+            FROM pg_stat_activity
+            WHERE datname = current_database() AND application_name != ''
+            GROUP BY usename
+            HAVING count(DISTINCT application_name) > 1
+            """
+        ).fetchall()
+    except Exception:
+        conn.rollback()
+        return []
+    return [
+        f"Role {usename} currently has multiple app connections ({', '.join(sorted(apps))}) — Ripple will "
+        "attribute all its queries to one app name. (Point-in-time snapshot; only connections live right now are visible.)"
+        for usename, apps in rows
+        if usename not in excluded
+    ]
+
+
 def from_pg_stat_statements(
-    dsn: str, min_calls: int = 1, exclude_roles: Iterable[str] = (), warnings: list[str] | None = None
+    dsn: str,
+    min_calls: int = 1,
+    exclude_roles: Iterable[str] = (),
+    warnings: list[str] | None = None,
+    stats_since: list | None = None,
 ) -> list[AppQuery]:
     """One app per database user. pg_stat_statements already hides literal values."""
     import psycopg
@@ -78,9 +159,18 @@ def from_pg_stat_statements(
         JOIN pg_database d ON d.oid = s.dbid
         WHERE d.datname = current_database() AND s.calls >= %s
     """
+    excluded = set(exclude_roles)
     with psycopg.connect(dsn) as conn:
         rows = conn.execute(sql, (min_calls,)).fetchall()
-    excluded = set(exclude_roles)
+        if stats_since is not None:
+            reset = _stats_reset_time(conn)
+            if reset is not None:
+                stats_since.append(reset)
+        if warnings is not None:
+            evict = _eviction_warning(conn)
+            if evict:
+                warnings.append(evict)
+            warnings.extend(_shared_role_warnings(conn, excluded))
     hidden = sorted({role for role, query, _ in rows if query == HIDDEN_QUERY and role not in excluded})
     if hidden and warnings is not None:
         warnings.append(

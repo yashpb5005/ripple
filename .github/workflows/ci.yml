@@ -25,6 +25,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Enable pg_stat_statements (needs shared_preload_libraries, so the service container is restarted)
+        run: |
+          CID=$(docker ps -q --filter "ancestor=postgres:16")
+          docker exec "$CID" bash -c "echo \"shared_preload_libraries='pg_stat_statements'\" >> /var/lib/postgresql/data/postgresql.conf"
+          docker restart "$CID"
+          for i in $(seq 1 10); do
+            docker exec "$CID" pg_isready -U postgres && break
+            sleep 2
+          done
       - run: python -m pip install -e ".[dev]"
       - run: pytest -q
         env:

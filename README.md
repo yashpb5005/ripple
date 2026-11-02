@@ -191,6 +191,7 @@ Exit codes: `0` safe, `1` breaks (or warnings with `--fail-on danger`), `2` erro
 - **Problems that depend on your data**, like duplicates blocking a new `UNIQUE` index. Ripple warns where it can (required columns, type changes), but the scratch copy is empty.
 - **Queries it never saw.** Only queries that actually ran get recorded, so collect over a normal week.
 - **Changes in meaning.** If a column keeps its name but means something new, every query still "works".
+- **Application-side unpacking.** Ripple only sees SQL. If a column is removed from a row shape but no query selects it by name — pulled out of a JSON blob, or mapped through an ORM model Ripple never parses — nothing will fail visibly here.
 - **Other databases.** Postgres only, for now.
 
 ## Changelog
